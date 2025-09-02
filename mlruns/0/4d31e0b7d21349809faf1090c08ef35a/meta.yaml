@@ -1,0 +1,14 @@
+artifact_uri: file:///C:/Users/N9NRC/projk/ab-Testing/mlruns/0/4d31e0b7d21349809faf1090c08ef35a/artifacts
+end_time: 1756643624358
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 4d31e0b7d21349809faf1090c08ef35a
+run_name: Production_AB_Test
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1756643596107
+status: 3
+tags: []
+user_id: N9NRC

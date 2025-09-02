@@ -1,0 +1,10 @@
+artifact_location: file:///C:/Users/N9NRC/projk/ab-Testing/mlruns/0/models/m-716bafc03fdb43f8973fe919f14251d5/artifacts
+creation_timestamp: 1756643596925
+experiment_id: '0'
+last_updated_timestamp: 1756643618137
+model_id: m-716bafc03fdb43f8973fe919f14251d5
+model_type: null
+name: production_current_model
+source_run_id: 4d31e0b7d21349809faf1090c08ef35a
+status: 2
+status_message: null
