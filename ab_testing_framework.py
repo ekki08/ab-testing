@@ -326,7 +326,7 @@ class ABTestingFramework:
         metrics['confidence_std'] = np.std(np.max(y_pred_proba, axis=1))
         
         return metrics
-    
+   
     def run_ab_test(self, variant_a_name, variant_b_name, confidence_level=0.95):
         """
         Menjalankan A/B test antara dua variant
@@ -346,27 +346,23 @@ class ABTestingFramework:
         # Get metrics
         metrics_a = self.results[variant_a_name]['metrics']
         metrics_b = self.results[variant_b_name]['metrics']
-        
+
         # Compare metrics
         comparison_results = {}
-        
+
         for metric in ['accuracy', 'precision_weighted', 'recall_weighted', 'f1_weighted']:
             if metric in metrics_a and metric in metrics_b:
                 value_a = metrics_a[metric]
                 value_b = metrics_b[metric]
-                
-                # Calculate improvement
-                improvement = ((value_b - value_a) / value_a) * 100
-                
-                # Statistical significance test (bootstrap)
-                significance = self.bootstrap_significance_test(
-                    self.results[variant_a_name]['predictions'],
-                    self.results[variant_b_name]['predictions'],
-                    self.y_test,
-                    metric,
-                    confidence_level
-                )
-                
+                improvement = ((value_b - value_a) / value_a) * 100 if value_a != 0 else np.inf
+
+                # Use stored test predictions as the sample to run bootstrap on
+                pred_a = np.array(self.results[variant_a_name]['predictions'])
+                pred_b = np.array(self.results[variant_b_name]['predictions'])
+                y_true = self.y_test
+
+                significance = self.bootstrap_significance_test(pred_a, pred_b, y_true, metric, confidence_level)
+
                 comparison_results[metric] = {
                     'variant_a': value_a,
                     'variant_b': value_b,
@@ -375,60 +371,70 @@ class ABTestingFramework:
                     'p_value': significance['p_value'],
                     'confidence_interval': significance['confidence_interval']
                 }
-        
-        # Print results
+
         self.print_ab_test_results(comparison_results, variant_a_name, variant_b_name)
-        
         return comparison_results
-    
+
     def bootstrap_significance_test(self, pred_a, pred_b, y_true, metric, confidence_level=0.95, n_bootstrap=1000):
+        """Perform bootstrap test comparing metric between two prediction arrays.
+
+        pred_a, pred_b: 1D arrays of predictions for the same samples
+        y_true: ground-truth labels (pandas Series or array)
+        metric: one of 'accuracy', 'f1_weighted', 'precision_weighted', 'recall_weighted'
         """
-        Bootstrap test untuk statistical significance
-        """
+        # Ensure numpy arrays for indexing
+        pred_a = np.array(pred_a)
+        pred_b = np.array(pred_b)
+
+        # y_true may be pandas Series
         n_samples = len(y_true)
         bootstrap_diffs = []
-        
+
         for _ in range(n_bootstrap):
-            # Bootstrap sample
             indices = np.random.choice(n_samples, n_samples, replace=True)
-            y_bootstrap = y_true.iloc[indices]
-            pred_a_bootstrap = pred_a[indices]
-            pred_b_bootstrap = pred_b[indices]
-            
-            # Calculate metric difference
+            if hasattr(y_true, 'iloc'):
+                y_boot = y_true.iloc[indices]
+            else:
+                y_boot = np.array(y_true)[indices]
+
+            pa = pred_a[indices]
+            pb = pred_b[indices]
+
             if metric == 'accuracy':
-                metric_a = accuracy_score(y_bootstrap, pred_a_bootstrap)
-                metric_b = accuracy_score(y_bootstrap, pred_b_bootstrap)
+                ma = accuracy_score(y_boot, pa)
+                mb = accuracy_score(y_boot, pb)
             elif metric == 'f1_weighted':
-                metric_a = f1_score(y_bootstrap, pred_a_bootstrap, average='weighted', zero_division=0)
-                metric_b = f1_score(y_bootstrap, pred_b_bootstrap, average='weighted', zero_division=0)
+                ma = f1_score(y_boot, pa, average='weighted', zero_division=0)
+                mb = f1_score(y_boot, pb, average='weighted', zero_division=0)
             elif metric == 'precision_weighted':
-                metric_a = precision_score(y_bootstrap, pred_a_bootstrap, average='weighted', zero_division=0)
-                metric_b = precision_score(y_bootstrap, pred_b_bootstrap, average='weighted', zero_division=0)
+                ma = precision_score(y_boot, pa, average='weighted', zero_division=0)
+                mb = precision_score(y_boot, pb, average='weighted', zero_division=0)
             elif metric == 'recall_weighted':
-                metric_a = recall_score(y_bootstrap, pred_b_bootstrap, average='weighted', zero_division=0)
-                metric_b = recall_score(y_bootstrap, pred_b_bootstrap, average='weighted', zero_division=0)
-            
-            bootstrap_diffs.append(metric_b - metric_a)
-        
-        # Calculate confidence interval
+                ma = recall_score(y_boot, pa, average='weighted', zero_division=0)
+                mb = recall_score(y_boot, pb, average='weighted', zero_division=0)
+            else:
+                raise ValueError(f"Unsupported metric for bootstrap test: {metric}")
+
+            bootstrap_diffs.append(mb - ma)
+
+        # Compute confidence interval
         alpha = 1 - confidence_level
-        lower_percentile = (alpha / 2) * 100
-        upper_percentile = (1 - alpha / 2) * 100
-        
-        confidence_interval = np.percentile(bootstrap_diffs, [lower_percentile, upper_percentile])
-        
-        # Check significance (0 not in confidence interval)
-        significant = not (confidence_interval[0] <= 0 <= confidence_interval[1])
-        
-        # Calculate p-value (proportion of bootstrap samples with opposite sign)
-        p_value = np.mean(np.array(bootstrap_diffs) <= 0) if np.mean(bootstrap_diffs) > 0 else np.mean(np.array(bootstrap_diffs) >= 0)
-        p_value = min(p_value, 1 - p_value) * 2  # Two-tailed test
-        
+        lower = (alpha / 2) * 100
+        upper = (1 - alpha / 2) * 100
+        ci = np.percentile(bootstrap_diffs, [lower, upper])
+
+        significant = not (ci[0] <= 0 <= ci[1])
+
+        # Two-tailed p-value: proportion of bootstrap diffs as or more extreme than 0
+        p_lower = np.mean(np.array(bootstrap_diffs) <= 0)
+        p_upper = np.mean(np.array(bootstrap_diffs) >= 0)
+        p_value = 2 * min(p_lower, p_upper)
+        p_value = min(max(p_value, 0.0), 1.0)
+
         return {
-            'significant': significant,
-            'p_value': p_value,
-            'confidence_interval': confidence_interval.tolist()
+            'significant': bool(significant),
+            'p_value': float(p_value),
+            'confidence_interval': ci.tolist()
         }
     
     def print_ab_test_results(self, comparison_results, variant_a_name, variant_b_name):
@@ -500,347 +506,143 @@ class ABTestingFramework:
         return all_comparisons
     
     def visualize_ab_test_results(self, comparison_results, variant_a_name, variant_b_name):
-        """Visualisasi hasil A/B test"""
+        """Simple, readable single-row comparison chart with optional CI and significance markers.
+
+        Keeps the first chart minimal (only bars) and provides clearer fonts, grid, and a small legend
+        explaining significance and CI presence.
+        """
+        sns.set_style("whitegrid")
+
         metrics = list(comparison_results.keys())
-        improvements = [comparison_results[m]['improvement'] for m in metrics]
-        significant = [comparison_results[m]['significant'] for m in metrics]
-        
-        # Create color map
-        colors = ['green' if sig else 'red' for sig in significant]
-        
-        plt.figure(figsize=(15, 10))
-        
-        # Bar plot of improvements
-        plt.subplot(2, 2, 1)
-        bars = plt.bar(metrics, improvements, color=colors, alpha=0.7)
-        plt.title(f'A/B Test Results: {variant_a_name} vs {variant_b_name}')
-        plt.ylabel('Improvement (%)')
-        plt.xticks(rotation=45)
-        plt.axhline(y=0, color='black', linestyle='-', alpha=0.3)
-        
-        # Add max and min labels for improvements
-        max_improvement = max(improvements)
-        min_improvement = min(improvements)
-        max_idx = improvements.index(max_improvement)
-        min_idx = improvements.index(min_improvement)
-        
-        # Label max improvement
-        plt.text(max_idx, max_improvement + 0.5, f'MAX: {max_improvement:.2f}%', 
-                ha='center', va='bottom', fontsize=10, fontweight='bold', color='darkgreen')
-        
-        # Label min improvement
-        plt.text(min_idx, min_improvement - 0.5, f'MIN: {min_improvement:.2f}%', 
-                ha='center', va='top', fontsize=10, fontweight='bold', color='darkred')
-        
-        # Add significance indicators
-        for i, (bar, sig) in enumerate(zip(bars, significant)):
-            if sig:
-                plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5, 
-                        '★', ha='center', va='bottom', fontsize=12, color='green')
-        
-        # Metric comparison
-        plt.subplot(2, 2, 2)
+        values_a = np.array([comparison_results[m].get('variant_a', np.nan) for m in metrics])
+        values_b = np.array([comparison_results[m].get('variant_b', np.nan) for m in metrics])
+        improvements = np.array([comparison_results[m].get('improvement', (values_b[i] - values_a[i]) * 100 if values_a[i] != 0 else np.nan) for i, m in enumerate(metrics)])
+
+        # Determine if CI data exist
+        ci_present = any(isinstance(comparison_results[m].get('confidence_interval'), (list, tuple)) for m in metrics)
+
         x = np.arange(len(metrics))
-        width = 0.35
-        
-        values_a = [comparison_results[m]['variant_a'] for m in metrics]
-        values_b = [comparison_results[m]['variant_b'] for m in metrics]
-        
-        plt.bar(x - width/2, values_a, width, label=variant_a_name, alpha=0.7)
-        plt.bar(x + width/2, values_b, width, label=variant_b_name, alpha=0.7)
-        
-        # Add max and min labels for metric comparison
-        all_values = values_a + values_b
-        max_value = max(all_values)
-        min_value = min(all_values)
-        
-        # Find which bar has max and min values
-        max_bar_idx = all_values.index(max_value)
-        min_bar_idx = all_values.index(min_value)
-        
-        if max_bar_idx < len(values_a):  # Max is in variant A
-            plt.text(max_bar_idx - width/2, max_value + 0.01, f'MAX: {max_value:.3f}', 
-                    ha='center', va='bottom', fontsize=9, fontweight='bold', color='darkblue')
-        else:  # Max is in variant B
-            plt.text(max_bar_idx - len(values_a) + width/2, max_value + 0.01, f'MAX: {max_value:.3f}', 
-                    ha='center', va='bottom', fontsize=9, fontweight='bold', color='darkblue')
-        
-        if min_bar_idx < len(values_a):  # Min is in variant A
-            plt.text(min_bar_idx - width/2, min_value - 0.01, f'MIN: {min_value:.3f}', 
-                    ha='center', va='top', fontsize=9, fontweight='bold', color='darkred')
-        else:  # Min is in variant B
-            plt.text(min_bar_idx - len(values_a) + width/2, min_value - 0.01, f'MIN: {min_value:.3f}', 
-                    ha='center', va='top', fontsize=9, fontweight='bold', color='darkred')
-        
-        plt.xlabel('Metrics')
-        plt.ylabel('Score')
-        plt.title('Metric Comparison')
-        plt.xticks(x, metrics, rotation=45)
-        plt.legend()
-        
-        # P-values
-        plt.subplot(2, 2, 3)
-        p_values = [comparison_results[m]['p_value'] for m in metrics]
-        plt.bar(metrics, p_values, color=['red' if p < 0.05 else 'blue' for p in p_values], alpha=0.7)
-        plt.axhline(y=0.05, color='red', linestyle='--', alpha=0.7, label='p=0.05')
-        
-        # Add max and min labels for p-values
-        max_p = max(p_values)
-        min_p = min(p_values)
-        max_p_idx = p_values.index(max_p)
-        min_p_idx = p_values.index(min_p)
-        
-        plt.text(max_p_idx, max_p + 0.01, f'MAX: {max_p:.4f}', 
-                ha='center', va='bottom', fontsize=9, fontweight='bold', color='darkred')
-        plt.text(min_p_idx, min_p - 0.01, f'MIN: {min_p:.4f}', 
-                ha='center', va='top', fontsize=9, fontweight='bold', color='darkblue')
-        
-        plt.title('P-values')
-        plt.ylabel('P-value')
-        plt.xticks(rotation=45)
-        plt.legend()
-        
-        # Confidence intervals
-        plt.subplot(2, 2, 4)
-        ci_lower = [comparison_results[m]['confidence_interval'][0] for m in metrics]
-        ci_upper = [comparison_results[m]['confidence_interval'][1] for m in metrics]
-        
-        # Calculate confidence interval widths
-        ci_widths = [abs(ci_upper[i] - ci_lower[i]) for i in range(len(metrics))]
-        
-        plt.errorbar(metrics, improvements, yerr=[np.abs(np.array(ci_lower)), np.array(ci_upper)], 
-                    fmt='o', capsize=5, alpha=0.7)
-        plt.axhline(y=0, color='black', linestyle='-', alpha=0.3)
-        
-        # Add max and min labels for confidence intervals
-        max_ci_width = max(ci_widths)
-        min_ci_width = min(ci_widths)
-        max_ci_idx = ci_widths.index(max_ci_width)
-        min_ci_idx = ci_widths.index(min_ci_width)
-        
-        plt.text(max_ci_idx, improvements[max_ci_idx] + 0.5, f'MAX CI: {max_ci_width:.3f}', 
-                ha='center', va='bottom', fontsize=9, fontweight='bold', color='darkorange')
-        plt.text(min_ci_idx, improvements[min_ci_idx] - 0.5, f'MIN CI: {min_ci_width:.3f}', 
-                ha='center', va='top', fontsize=9, fontweight='bold', color='darkgreen')
-        
-        plt.title('Improvement with Confidence Intervals')
-        plt.ylabel('Improvement (%)')
-        plt.xticks(rotation=45)
-        
+        width = 0.36
+
+        fig, ax = plt.subplots(figsize=(12, 5))
+        ax.bar(x - width/2, values_a, width, label=variant_a_name, color='#4C72B0', alpha=0.9)
+        ax.bar(x + width/2, values_b, width, label=variant_b_name, color='#DD8452', alpha=0.9)
+
+        ax.set_xticks(x)
+        ax.set_xticklabels([m.replace('_', ' ').title() for m in metrics], rotation=30, ha='right', fontsize=10)
+        ax.set_ylabel('Score', fontsize=11)
+        ax.set_title(f'{variant_a_name} vs {variant_b_name}', fontsize=13, fontweight='bold')
+        ax.grid(axis='y', linestyle='--', alpha=0.4)
+        ax.legend(frameon=False)
+
+        # annotate significance with a star above the larger bar
+        for i, m in enumerate(metrics):
+            if comparison_results[m].get('significant'):
+                top = max(values_a[i], values_b[i])
+                ax.text(i, top + 0.02 * max(1.0, top), '*', ha='center', va='bottom', fontsize=16, color='black')
+
+        # small explanatory box
+        notes = "'*' = statistically significant"
+        if ci_present:
+            notes += "\nError bars = confidence intervals"
+        ax.text(1.02, 0.95, notes, transform=ax.transAxes, fontsize=9, va='top', ha='left', bbox=dict(boxstyle='round', fc='white', ec='0.8'))
+
         plt.tight_layout()
         plt.show()
     
     def visualize_comprehensive_results(self, comparison_results, variant_a_name, variant_b_name):
-        """Visualisasi komprehensif dengan label max dan min yang lebih detail"""
+        """Comprehensive visual: metric scores, improvements, and CI summary in a 2x2 layout.
+
+        This version uses larger fonts, clearer color mapping for improvements, and a dedicated
+        CI subplot that highlights widest/narrowest intervals.
+        """
+        sns.set_style("whitegrid")
+
         metrics = list(comparison_results.keys())
-        improvements = [comparison_results[m]['improvement'] for m in metrics]
-        significant = [comparison_results[m]['significant'] for m in metrics]
-        p_values = [comparison_results[m]['p_value'] for m in metrics]
-        
-        # Create figure with larger size
-        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-        fig.suptitle(f'Comprehensive A/B Test Analysis: {variant_a_name} vs {variant_b_name}', 
-                    fontsize=16, fontweight='bold')
-        
-        # 1. Improvement Bar Chart with Max/Min Labels
-        ax1 = axes[0, 0]
-        colors = ['green' if sig else 'red' for sig in significant]
-        bars = ax1.bar(metrics, improvements, color=colors, alpha=0.7, edgecolor='black', linewidth=1)
-        ax1.set_title('Improvement Analysis', fontweight='bold')
-        ax1.set_ylabel('Improvement (%)')
-        ax1.tick_params(axis='x', rotation=45)
-        ax1.axhline(y=0, color='black', linestyle='-', alpha=0.5)
-        
-        # Add max/min labels with better positioning
-        max_improvement = max(improvements)
-        min_improvement = min(improvements)
-        max_idx = improvements.index(max_improvement)
-        min_idx = improvements.index(min_improvement)
-        
-        # Max label
-        ax1.annotate(f'MAX: {max_improvement:.2f}%', 
-                    xy=(max_idx, max_improvement), xytext=(max_idx, max_improvement + 1),
-                    ha='center', va='bottom', fontsize=11, fontweight='bold', color='darkgreen',
-                    arrowprops=dict(arrowstyle='->', color='darkgreen', lw=1.5))
-        
-        # Min label
-        ax1.annotate(f'MIN: {min_improvement:.2f}%', 
-                    xy=(min_idx, min_improvement), xytext=(min_idx, min_improvement - 1),
-                    ha='center', va='top', fontsize=11, fontweight='bold', color='darkred',
-                    arrowprops=dict(arrowstyle='->', color='darkred', lw=1.5))
-        
-        # Add significance stars
-        for i, (bar, sig) in enumerate(zip(bars, significant)):
-            if sig:
-                ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.3, 
-                        '★', ha='center', va='bottom', fontsize=14, color='gold')
-        
-        # 2. Metric Comparison with Max/Min
-        ax2 = axes[0, 1]
+        values_a = np.array([comparison_results[m].get('variant_a', np.nan) for m in metrics])
+        values_b = np.array([comparison_results[m].get('variant_b', np.nan) for m in metrics])
+        improvements = np.array([comparison_results[m].get('improvement', (values_b[i] - values_a[i]) * 100 if values_a[i] != 0 else np.nan) for i, m in enumerate(metrics)])
+
+        fig, axes = plt.subplots(2, 2, figsize=(16, 10), gridspec_kw={'height_ratios': [1, 0.8]})
+        ax_scores = axes[0, 0]
+        ax_impr = axes[0, 1]
+        ax_ci = axes[1, 0]
+        axes[1, 1].axis('off')
+
         x = np.arange(len(metrics))
-        width = 0.35
-        
-        values_a = [comparison_results[m]['variant_a'] for m in metrics]
-        values_b = [comparison_results[m]['variant_b'] for m in metrics]
-        
-        bars_a = ax2.bar(x - width/2, values_a, width, label=variant_a_name, alpha=0.7, color='skyblue')
-        bars_b = ax2.bar(x + width/2, values_b, width, label=variant_b_name, alpha=0.7, color='lightcoral')
-        
-        # Find overall max and min
-        all_values = values_a + values_b
-        max_value = max(all_values)
-        min_value = min(all_values)
-        
-        # Add max/min annotations
-        ax2.annotate(f'OVERALL MAX: {max_value:.3f}', 
-                    xy=(0.5, 0.95), xycoords='axes fraction',
-                    ha='center', va='top', fontsize=10, fontweight='bold', color='darkblue',
-                    bbox=dict(boxstyle='round,pad=0.3', facecolor='lightblue', alpha=0.8))
-        
-        ax2.annotate(f'OVERALL MIN: {min_value:.3f}', 
-                    xy=(0.5, 0.05), xycoords='axes fraction',
-                    ha='center', va='bottom', fontsize=10, fontweight='bold', color='darkred',
-                    bbox=dict(boxstyle='round,pad=0.3', facecolor='lightcoral', alpha=0.8))
-        
-        ax2.set_xlabel('Metrics')
-        ax2.set_ylabel('Score')
-        ax2.set_title('Metric Comparison', fontweight='bold')
-        ax2.set_xticks(x)
-        ax2.set_xticklabels(metrics, rotation=45)
-        ax2.legend()
-        
-        # 3. P-values with Max/Min
-        ax3 = axes[0, 2]
-        bars_p = ax3.bar(metrics, p_values, color=['red' if p < 0.05 else 'blue' for p in p_values], 
-                        alpha=0.7, edgecolor='black', linewidth=1)
-        ax3.axhline(y=0.05, color='red', linestyle='--', alpha=0.8, label='p=0.05', linewidth=2)
-        
-        # Add max/min labels for p-values
-        max_p = max(p_values)
-        min_p = min(p_values)
-        max_p_idx = p_values.index(max_p)
-        min_p_idx = p_values.index(min_p)
-        
-        ax3.annotate(f'MAX P: {max_p:.4f}', 
-                    xy=(max_p_idx, max_p), xytext=(max_p_idx, max_p + 0.02),
-                    ha='center', va='bottom', fontsize=10, fontweight='bold', color='darkred',
-                    arrowprops=dict(arrowstyle='->', color='darkred', lw=1.5))
-        
-        ax3.annotate(f'MIN P: {min_p:.4f}', 
-                    xy=(min_p_idx, min_p), xytext=(min_p_idx, min_p - 0.02),
-                    ha='center', va='top', fontsize=10, fontweight='bold', color='darkblue',
-                    arrowprops=dict(arrowstyle='->', color='darkblue', lw=1.5))
-        
-        ax3.set_title('P-values Analysis', fontweight='bold')
-        ax3.set_ylabel('P-value')
-        ax3.tick_params(axis='x', rotation=45)
-        ax3.legend()
-        
-        # 4. Confidence Intervals with Max/Min
-        ax4 = axes[1, 0]
-        ci_lower = [comparison_results[m]['confidence_interval'][0] for m in metrics]
-        ci_upper = [comparison_results[m]['confidence_interval'][1] for m in metrics]
-        ci_widths = [abs(ci_upper[i] - ci_lower[i]) for i in range(len(metrics))]
-        
-        ax4.errorbar(metrics, improvements, yerr=[np.abs(np.array(ci_lower)), np.array(ci_upper)], 
-                    fmt='o', capsize=5, alpha=0.7, markersize=8, linewidth=2)
-        ax4.axhline(y=0, color='black', linestyle='-', alpha=0.5)
-        
-        # Add max/min CI width labels
-        max_ci_width = max(ci_widths)
-        min_ci_width = min(ci_widths)
-        max_ci_idx = ci_widths.index(max_ci_width)
-        min_ci_idx = ci_widths.index(min_ci_width)
-        
-        ax4.annotate(f'MAX CI WIDTH: {max_ci_width:.3f}', 
-                    xy=(max_ci_idx, improvements[max_ci_idx]), 
-                    xytext=(max_ci_idx, improvements[max_ci_idx] + 1.5),
-                    ha='center', va='bottom', fontsize=10, fontweight='bold', color='darkorange',
-                    arrowprops=dict(arrowstyle='->', color='darkorange', lw=1.5))
-        
-        ax4.annotate(f'MIN CI WIDTH: {min_ci_width:.3f}', 
-                    xy=(min_ci_idx, improvements[min_ci_idx]), 
-                    xytext=(min_ci_idx, improvements[min_ci_idx] - 1.5),
-                    ha='center', va='top', fontsize=10, fontweight='bold', color='darkgreen',
-                    arrowprops=dict(arrowstyle='->', color='darkgreen', lw=1.5))
-        
-        ax4.set_title('Confidence Intervals', fontweight='bold')
-        ax4.set_ylabel('Improvement (%)')
-        ax4.tick_params(axis='x', rotation=45)
-        
-        # 5. Significance Summary
-        ax5 = axes[1, 1]
-        sig_count = sum(significant)
-        non_sig_count = len(significant) - sig_count
-        
-        labels = ['Significant', 'Not Significant']
-        sizes = [sig_count, non_sig_count]
-        colors_pie = ['lightgreen', 'lightcoral']
-        
-        wedges, texts, autotexts = ax5.pie(sizes, labels=labels, colors=colors_pie, autopct='%1.1f%%',
-                                          startangle=90, explode=(0.05, 0.05))
-        
-        # Add max/min labels for pie chart
-        if sig_count > 0:
-            ax5.annotate(f'MAX: {sig_count} Significant', 
-                        xy=(0.5, 0.8), xycoords='axes fraction',
-                        ha='center', va='center', fontsize=11, fontweight='bold', color='darkgreen',
-                        bbox=dict(boxstyle='round,pad=0.3', facecolor='lightgreen', alpha=0.8))
-        
-        if non_sig_count > 0:
-            ax5.annotate(f'MIN: {non_sig_count} Non-Significant', 
-                        xy=(0.5, 0.2), xycoords='axes fraction',
-                        ha='center', va='center', fontsize=11, fontweight='bold', color='darkred',
-                        bbox=dict(boxstyle='round,pad=0.3', facecolor='lightcoral', alpha=0.8))
-        
-        ax5.set_title('Significance Summary', fontweight='bold')
-        
-        # 6. Performance Heatmap
-        ax6 = axes[1, 2]
-        performance_matrix = np.array([
-            [comparison_results[m]['variant_a'] for m in metrics],
-            [comparison_results[m]['variant_b'] for m in metrics]
-        ])
-        
-        im = ax6.imshow(performance_matrix, cmap='RdYlGn', aspect='auto')
-        ax6.set_xticks(range(len(metrics)))
-        ax6.set_xticklabels(metrics, rotation=45)
-        ax6.set_yticks([0, 1])
-        ax6.set_yticklabels([variant_a_name, variant_b_name])
-        
-        # Add value annotations
-        for i in range(2):
-            for j in range(len(metrics)):
-                value = performance_matrix[i, j]
-                ax6.text(j, i, f'{value:.3f}', ha='center', va='center', 
-                        fontsize=10, fontweight='bold', color='black')
-        
-        # Add max/min labels for heatmap
-        max_perf = np.max(performance_matrix)
-        min_perf = np.min(performance_matrix)
-        max_pos = np.unravel_index(np.argmax(performance_matrix), performance_matrix.shape)
-        min_pos = np.unravel_index(np.argmin(performance_matrix), performance_matrix.shape)
-        
-        ax6.annotate(f'MAX: {max_perf:.3f}', 
-                    xy=(max_pos[1], max_pos[0]), xytext=(max_pos[1], max_pos[0] - 0.3),
-                    ha='center', va='top', fontsize=10, fontweight='bold', color='darkgreen',
-                    arrowprops=dict(arrowstyle='->', color='darkgreen', lw=1.5))
-        
-        ax6.annotate(f'MIN: {min_perf:.3f}', 
-                    xy=(min_pos[1], min_pos[0]), xytext=(min_pos[1], min_pos[0] + 0.3),
-                    ha='center', va='bottom', fontsize=10, fontweight='bold', color='darkred',
-                    arrowprops=dict(arrowstyle='->', color='darkred', lw=1.5))
-        
-        ax6.set_title('Performance Heatmap', fontweight='bold')
-        plt.colorbar(im, ax=ax6, label='Score')
-        
+        width = 0.36
+
+        # Top-left: metric scores
+        ax_scores.bar(x - width/2, values_a, width, label=variant_a_name, color='#4C72B0', alpha=0.9)
+        ax_scores.bar(x + width/2, values_b, width, label=variant_b_name, color='#DD8452', alpha=0.9)
+        ax_scores.set_xticks(x)
+        ax_scores.set_xticklabels([m.replace('_', ' ').title() for m in metrics], rotation=30, ha='right', fontsize=10)
+        ax_scores.set_ylabel('Score', fontsize=11)
+        ax_scores.set_title('Metric Scores', fontsize=13, weight='bold')
+        ax_scores.grid(axis='y', linestyle='--', alpha=0.4)
+        ax_scores.legend(frameon=False)
+        for i, m in enumerate(metrics):
+            if comparison_results[m].get('significant'):
+                top = max(values_a[i], values_b[i])
+                ax_scores.text(i, top + 0.02 * max(1.0, top), '*', ha='center', va='bottom', fontsize=16)
+
+        # Top-right: improvements
+        cmap = plt.get_cmap('RdYlGn')
+        clipped = np.clip(improvements, -100, 100)
+        colors = [cmap((v + 100) / 200.0) if not np.isnan(v) else "#03A196" for v in clipped]
+        bars = ax_impr.bar(x, improvements, color=colors, alpha=0.95)
+
+        bar_color = 'salmon'
+        bars = ax_impr.bar(x, improvements, color = [bar_color if not np.isnan(v) else "#888888" for v in improvements], alpha=0.95)
+        ax_impr.axhline(0, color='black', linewidth=0.6)
+        ax_impr.set_title('Improvement (%)', fontsize=13, weight='bold')
+        ax_impr.set_xticks(x)
+        ax_impr.set_xticklabels([], rotation=30)
+        ax_impr.grid(axis='y', linestyle='--', alpha=0.4)
+        for rect in bars:
+            h = rect.get_height()
+            ax_impr.text(rect.get_x() + rect.get_width() / 2, h + np.sign(h) * 0.02 * max(1.0, abs(h)), f"{h:+.2f}%", ha='center', va='bottom' if h>=0 else 'top', fontsize=9)
+
+        # Bottom-left: CI ranges if available
+        ci_present = any(isinstance(comparison_results[m].get('confidence_interval'), (list, tuple)) for m in metrics)
+        if ci_present:
+            y_pos = np.arange(len(metrics))
+            widths = []
+            for i, m in enumerate(metrics):
+                ci = comparison_results[m].get('confidence_interval')
+                if isinstance(ci, (list, tuple)) and len(ci) == 2:
+                    low, high = ci
+                    # plot the CI as a horizontal thick line
+                    ax_ci.hlines(y=i, xmin=low, xmax=high, colors='grey', linewidth=6, alpha=0.7)
+                    ax_ci.plot((low+high)/2, i, 'o', color='black')
+                    widths.append((abs(high-low), m))
+            ax_ci.set_yticks(y_pos)
+            ax_ci.set_yticklabels([m.replace('_', ' ').title() for m in metrics], fontsize=10)
+            ax_ci.set_xlabel('Score')
+            ax_ci.set_title('Confidence Intervals', fontsize=12)
+            ax_ci.grid(axis='x', linestyle='--', alpha=0.4)
+            if widths:
+                widest = max(widths, key=lambda x: x[0])
+                narrowest = min(widths, key=lambda x: x[0])
+                ax_ci.text(1.02, 0.95, f'Widest CI: {widest[1]}\nNarrowest CI: {narrowest[1]}', transform=ax_ci.transAxes, va='top', ha='left', fontsize=9, bbox=dict(boxstyle='round', fc='white', ec='0.8'))
+        else:
+            ax_ci.axis('off')
+            ax_ci.text(0.02, 0.5, 'No confidence interval data available.', transform=ax_ci.transAxes, fontsize=11, va='center')
+
         plt.tight_layout()
         plt.show()
     
     def save_results(self, filename="ab_test_results.json"):
         """Save hasil A/B testing ke file JSON"""
+        # Remove non-serializable objects (Pipeline) from experiments
+        experiments_serializable = {}
+        for variant, exp in self.experiments.items():
+            experiments_serializable[variant] = {
+                k: v for k, v in exp.items() if k != 'model'
+            }
+
         results_to_save = {
-            'experiments': self.experiments,
+            'experiments': experiments_serializable,
             'results': self.results,
             'metadata': {
                 'created_at': datetime.now().isoformat(),
@@ -848,15 +650,15 @@ class ABTestingFramework:
                 'random_state': self.random_state
             }
         }
-        
+
         # Convert numpy arrays to lists for JSON serialization
         for variant in results_to_save['results']:
             results_to_save['results'][variant]['predictions'] = results_to_save['results'][variant]['predictions'].tolist()
             results_to_save['results'][variant]['probabilities'] = results_to_save['results'][variant]['probabilities'].tolist()
-        
+
         with open(filename, 'w') as f:
             json.dump(results_to_save, f, indent=2)
-        
+
         print(f"✅ Results saved to {filename}")
     
     def generate_report(self, comparison_results, variant_a_name, variant_b_name):

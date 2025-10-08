@@ -284,7 +284,10 @@ def example_5_custom_ab_test_scenario():
     for metric in ['accuracy', 'f1_weighted', 'precision_weighted', 'recall_weighted']:
         value_a = metrics_a[metric]
         value_b = metrics_b[metric]
-        improvement = ((value_b - value_a) / value_a) * 100
+        
+        # Guard pembagian nol pada baseline
+        denom = value_a if value_a != 0 else 1e-12
+        improvement = ((value_b - value_a) / denom) * 100
         
         print(f"\n{metric.upper()}:")
         print(f"   Original Features: {value_a:.4f}")
@@ -318,6 +321,9 @@ def example_5_custom_ab_test_scenario():
     
     return model_a, model_b, metrics_a, metrics_b
 
+# Add import for json at the top
+import json
+
 def run_all_examples():
     """
     Menjalankan semua contoh A/B testing
@@ -348,7 +354,8 @@ def run_all_examples():
     framework2.save_results("example_2_results.json")
     framework3.save_results("example_3_results.json")
     framework4.save_results("example_4_results.json")
-    
+
+
     return {
         'framework1': framework1, 'results1': results1,
         'framework2': framework2, 'results2': results2,
