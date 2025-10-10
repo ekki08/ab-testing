@@ -7,7 +7,7 @@
         "max_iter": 1000,
         "random_state": 42
       },
-      "created_at": "2025-10-08T14:34:34.519838"
+      "created_at": "2025-10-09T14:24:37.481617"
     },
     "Treatment": {
       "params": {
@@ -16,7 +16,7 @@
         "max_iter": 1000,
         "random_state": 42
       },
-      "created_at": "2025-10-08T14:34:34.519895"
+      "created_at": "2025-10-09T14:24:37.481767"
     }
   },
   "results": {
@@ -5923,9 +5923,9 @@
         "cv_f1_std": 0.024055612702921992,
         "avg_confidence": 0.7751467860275943,
         "confidence_std": 0.131516826189508,
-        "training_time": 0.0419313907623291
+        "training_time": 0.02050185203552246
       },
-      "trained_at": "2025-10-08T14:34:34.717768"
+      "trained_at": "2025-10-09T14:24:37.631534"
     },
     "Treatment": {
       "predictions": [
@@ -11830,13 +11830,13 @@
         "cv_f1_std": 0.024055612702921992,
         "avg_confidence": 0.7721741683738074,
         "confidence_std": 0.1318865143437582,
-        "training_time": 0.018225431442260742
+        "training_time": 0.0180661678314209
       },
-      "trained_at": "2025-10-08T14:34:34.874394"
+      "trained_at": "2025-10-09T14:24:37.781577"
     }
   },
   "metadata": {
-    "created_at": "2025-10-08T14:36:13.198165",
+    "created_at": "2025-10-09T14:26:22.511409",
     "dataset_shape": [
       4898,
       13
